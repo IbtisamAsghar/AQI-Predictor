@@ -1,0 +1,38 @@
+name: Daily Model Retraining Pipeline
+
+on:
+  schedule:
+    # Run once daily at 2:00 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    # Enables manual trigger from the GitHub Actions tab
+
+jobs:
+  run-training:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: 'pip' # Caches downloaded packages automatically between runs
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Model Training & Evaluation Pipeline
+        env:
+          ENV: production
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_REPO_ID: ${{ secrets.HF_REPO_ID }}
+          CITY: Islamabad
+          LATITUDE: 33.6844
+          LONGITUDE: 73.0479
+        run: python src/pipelines/training_pipeline.py

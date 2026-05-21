@@ -1,0 +1,37 @@
+name: Hourly Feature Ingestion Pipeline
+
+on:
+  schedule:
+    # Run at the 5th minute of every hour
+    - cron: '5 * * * *'
+  workflow_dispatch:
+    # Enables manual trigger from the GitHub Actions tab
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: 'pip' # Caches downloaded packages automatically between runs
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Ingestion & Feature Pipeline
+        env:
+          ENV: production
+          MONGODB_URI: ${{ secrets.MONGODB_URI }}
+          AQICN_TOKEN: ${{ secrets.AQICN_TOKEN }}
+          CITY: Islamabad
+          LATITUDE: 33.6844
+          LONGITUDE: 73.0479
+        run: python src/pipelines/feature_pipeline.py
