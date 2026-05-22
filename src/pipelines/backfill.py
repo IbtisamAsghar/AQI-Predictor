@@ -168,8 +168,7 @@ def run_backfill(start_date: str = "2023-06-01", end_date: str = None) -> bool:
         raise e
 
 if __name__ == "__main__":
-    # Test-run backfiller over a short 2-week slice to verify complete pipeline sanity
-    # This prevents hitting API rate limits during local driver testing
-    test_start = "2026-05-01"
-    test_end = "2026-05-14"
+    # Seeding rich 1+ year seasonal historical dataset to train high-accuracy models
+    test_start = "2025-01-01"
+    test_end = "2026-05-01"
     run_backfill(start_date=test_start, end_date=test_end)

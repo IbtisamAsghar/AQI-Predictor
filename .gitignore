@@ -222,3 +222,6 @@ __marimo__/
 phases.md
 architecture.md
 .env.example
+
+# Local MLOps serialized binaries
+/models/

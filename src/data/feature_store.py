@@ -46,8 +46,9 @@ def setup_indices():
 
 def insert_records(records: List[Dict[str, Any]]) -> int:
     """
-    Saves a batch of records using highly robust, idempotent bulk upserts.
+    Saves a batch of records using highly robust, idempotent, and chunked bulk upserts.
     If a record for the same timestamp and location already exists, it is overwritten.
+    Large payloads are automatically split into smaller batches with retry backoffs.
     
     Args:
         records: A list of feature dictionaries.
@@ -65,43 +66,60 @@ def insert_records(records: List[Dict[str, Any]]) -> int:
     # Ensure indices are configured before write
     setup_indices()
     
-    logger.info(f"Preparing bulk upserts for {len(records)} records...")
-    operations = []
+    batch_size = 1000
+    total_written = 0
+    total_batches = (len(records) - 1) // batch_size + 1
     
-    for r in records:
-        # Convert timestamp to string if passed as datetime
-        ts = r["timestamp"]
-        if isinstance(ts, datetime):
-            ts = ts.isoformat()
-            r["timestamp"] = ts
+    logger.info(f"Preparing chunked bulk upserts for {len(records)} records in {total_batches} batches...")
+    
+    import time
+    
+    for i in range(0, len(records), batch_size):
+        batch = records[i:i + batch_size]
+        operations = []
+        
+        for r in batch:
+            ts = r["timestamp"]
+            if isinstance(ts, datetime):
+                ts = ts.isoformat()
+                r["timestamp"] = ts
+                
+            loc = r["location"]
             
-        loc = r["location"]
-        
-        # Build bulk operation matching compound key
-        operations.append(
-            UpdateOne(
-                {"timestamp": ts, "location": loc},
-                {"$set": r},
-                upsert=True
+            operations.append(
+                UpdateOne(
+                    {"timestamp": ts, "location": loc},
+                    {"$set": r},
+                    upsert=True
+                )
             )
-        )
+            
+        retries = 3
+        delay = 2
+        batch_idx = i // batch_size + 1
         
-    try:
-        result = collection.bulk_write(operations, ordered=False)
-        upserted_count = result.upserted_count
-        modified_count = result.modified_count
-        matched_count = result.matched_count
-        
-        logger.info(
-            f"Successfully completed bulk writes. "
-            f"Inserted (New): {upserted_count}, Modified (Overwritten): {modified_count}, "
-            f"Matched (Unchanged): {matched_count - modified_count}."
-        )
-        return upserted_count + modified_count
-        
-    except Exception as e:
-        logger.critical(f"Bulk upserts failed: {e}")
-        raise RuntimeError("Feature store write error.") from e
+        for attempt in range(1, retries + 1):
+            try:
+                result = collection.bulk_write(operations, ordered=False)
+                upserted_count = result.upserted_count
+                modified_count = result.modified_count
+                total_written += (upserted_count + modified_count)
+                
+                logger.info(
+                    f"  [Batch {batch_idx}/{total_batches}] Successful. "
+                    f"Written: {upserted_count + modified_count} (New: {upserted_count}, Modified: {modified_count})."
+                )
+                break
+            except Exception as e:
+                logger.warning(f"  [Batch {batch_idx}/{total_batches}] Attempt {attempt} failed: {e}")
+                if attempt == retries:
+                    logger.critical(f"  [Batch {batch_idx}/{total_batches}] Failed permanently after {retries} attempts.")
+                    raise RuntimeError("Feature store batch write error.") from e
+                time.sleep(delay)
+                delay *= 2
+                
+    logger.info(f"Successfully completed all bulk writes. Total upserted/modified: {total_written} records.")
+    return total_written
 
 def get_features_in_range(start_date: Union[str, datetime], end_date: Union[str, datetime]) -> pd.DataFrame:
     """

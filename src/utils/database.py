@@ -5,6 +5,14 @@ from threading import Lock
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
 
+# Self-healing MLOps bypass: force python process to resolve names using Google/Cloudflare public DNS
+try:
+    import dns.resolver
+    dns.resolver.default_resolver = dns.resolver.Resolver(configure=False)
+    dns.resolver.default_resolver.nameservers = ['8.8.8.8', '8.8.4.4', '1.1.1.1']
+except Exception:
+    pass
+
 # Add root folder to search path
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 
@@ -41,7 +49,9 @@ class MongoDBConnection:
                 client = MongoClient(
                     settings.MONGODB_URI,
                     tlsCAFile=certifi.where(),
-                    serverSelectionTimeoutMS=5000,
+                    serverSelectionTimeoutMS=10000,
+                    socketTimeoutMS=60000,
+                    connectTimeoutMS=30000,
                     maxPoolSize=50,
                     minPoolSize=5,
                     retryWrites=True
