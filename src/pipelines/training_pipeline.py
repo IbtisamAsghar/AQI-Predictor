@@ -73,7 +73,7 @@ def run_training_pipeline() -> bool:
         
         # 6. Fit multi-horizon regressor models
         logger.info("Training multi-horizon prediction estimators...")
-        model = AQIPredictionModel(n_estimators=100, max_depth=15)
+        model = AQIPredictionModel(n_estimators=50, max_depth=8)
         model.fit(X_train_scaled, y_train_dict)
         logger.info("Models successfully trained.")
         
@@ -140,6 +140,34 @@ def run_training_pipeline() -> bool:
         with open(features_path, "wb") as f:
             pickle.dump(feature_names, f)
         logger.info(f"Saved feature list definitions to {features_path}")
+        
+        # 9. Serverless Model Registry Publishing (Hugging Face Hub & MongoDB Atlas metadata)
+        logger.info("Publishing trained artifacts and metadata to Model Registry...")
+        from src.models.registry import register_model
+        from datetime import timezone
+        
+        metrics_dict = {}
+        for item in metrics:
+            h_key = f"horizon_{item['horizon'].lower()}" # horizon_24h, horizon_48h, horizon_72h
+            metrics_dict[h_key] = {
+                "mae": float(item["mae"]),
+                "rmse": float(item["rmse"]),
+                "r2": float(item["r2"])
+            }
+            
+        parameters_dict = {
+            "n_estimators": int(model.n_estimators),
+            "max_depth": int(model.max_depth),
+            "random_state": int(model.random_state)
+        }
+        
+        version_str = f"v_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+        register_model(
+            version=version_str,
+            metrics=metrics_dict,
+            parameters=parameters_dict,
+            features=feature_names
+        )
         
         logger.info("="*60)
         logger.info("   >>> MODEL TRAINING PIPELINE SUCCESSFUL & DEPLOYABLE <<<")
