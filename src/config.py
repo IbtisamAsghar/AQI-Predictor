@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     # Live External APIs Tokens
     AQICN_TOKEN: str = Field(default="", description="Token for the AQICN World Air Quality index fallback API")
     
+    # API Address Configuration (Dashboard serving)
+    API_URL: str = Field(default="http://127.0.0.1:8000", description="Base URL of the FastAPI serving API")
+    
     # Operational File Directories (Base relative calculations)
     BASE_DIR: Path = Path(__file__).resolve().parent.parent
     LOG_DIR: Path = BASE_DIR / "logs"
