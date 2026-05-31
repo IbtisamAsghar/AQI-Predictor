@@ -86,54 +86,102 @@ def engineer_features(df: pd.DataFrame, is_training: bool = False) -> pd.DataFra
 
 def run_feature_pipeline() -> bool:
     """
-    Active pipeline runner triggered by scheduled cron jobs.
-    In later phases, this fetches live values, queries past records,
-    calculates features, and commits back into MongoDB.
+    Retrieves real-time meteorological and air quality measurements,
+    joins them with historical logs from the MongoDB Atlas Feature Store,
+    engineers time-series features incrementally, and upserts the
+    new engineered record back into MongoDB.
     """
     logger.info("Triggering active feature pipeline execution...")
     
-    # Local placeholder demonstration data mimicking ingestion engine
     try:
+        # 1. Fetch real-time weather & air quality records
         from src.data.ingest import ingest_data
         raw_record = ingest_data()
-        
-        # Mimic a historical series by copying the record with hourly timestamps
-        base_time = pd.to_datetime(raw_record["timestamp"])
-        records = []
-        
-        # Generate 49 dummy hours of history leading to this record for testing rolling windows
-        for i in range(49):
-            time_delta = pd.Timedelta(hours=(48 - i))
-            rec = raw_record.copy()
-            rec["timestamp"] = (base_time - time_delta).isoformat()
-            # Add small random noise to mimic time series changes
-            rec["aqi"] = max(0.0, rec["aqi"] + np.random.uniform(-10, 10))
-            rec["pm2_5"] = max(0.0, rec["pm2_5"] + np.random.uniform(-5, 5))
-            records.append(rec)
+        if not raw_record:
+            raise RuntimeError("Data ingestion failed to retrieve real-time record.")
             
-        # Convert to DataFrame
-        df_raw = pd.DataFrame(records)
+        new_timestamp = raw_record["timestamp"]
+        logger.info(f"Ingested raw record timestamp: {new_timestamp}")
         
-        # Run feature transformation
-        df_features = engineer_features(df_raw, is_training=False)
+        # 2. Fetch the latest historical records for lag/rolling computations
+        # 72 hours is sufficient to compute 48-hour lags and 24-hour rolling stats.
+        from src.data.feature_store import get_latest_features, insert_records
         
-        # Display the newest engineered row (the latest feature vector)
-        latest_row = df_features.iloc[-1]
+        try:
+            df_history = get_latest_features(limit=72)
+        except Exception as e:
+            logger.warning(f"Could not retrieve history from Feature Store: {e}. Fallback to empty df.")
+            df_history = pd.DataFrame()
+            
+        # 3. Standardize and merge raw record with history
+        raw_columns = [
+            "timestamp", "location", "latitude", "longitude",
+            "pm2_5", "pm10", "no2", "so2", "co", "o3",
+            "temperature", "humidity", "wind_speed", "wind_direction", "aqi"
+        ]
         
+        if not df_history.empty:
+            # Filter history to keep only raw columns for re-engineering
+            df_history_raw = df_history[[c for c in raw_columns if c in df_history.columns]].copy()
+            df_new_raw = pd.DataFrame([raw_record])
+            df_new_raw["timestamp"] = pd.to_datetime(df_new_raw["timestamp"])
+            
+            # Combine history with new raw record
+            df_combined = pd.concat([df_history_raw, df_new_raw], ignore_index=True)
+            df_combined = df_combined.drop_duplicates(subset=["timestamp", "location"])
+        else:
+            logger.warning("Feature Store is empty or unreachable. Running engineering on single record.")
+            df_combined = pd.DataFrame([raw_record])
+            df_combined["timestamp"] = pd.to_datetime(df_combined["timestamp"])
+            
+        # 4. Run feature transformations
+        df_engineered = engineer_features(df_combined, is_training=False)
+        
+        # 5. Extract only the newly calculated record
+        latest_engineered_row = df_engineered.iloc[-1]
+        latest_ts = latest_engineered_row["timestamp"]
+        if isinstance(latest_ts, pd.Timestamp):
+            latest_ts = latest_ts.isoformat()
+            
+        logger.info(f"Target timestamp for upsert: {latest_ts}")
+        
+        # Convert row to native python types (prevents numpy serialization errors in MongoDB BSON)
+        record_to_insert = latest_engineered_row.to_dict()
+        if isinstance(record_to_insert["timestamp"], pd.Timestamp):
+            record_to_insert["timestamp"] = record_to_insert["timestamp"].isoformat()
+            
+        for k, v in record_to_insert.items():
+            if isinstance(v, (np.integer, np.int64)):
+                record_to_insert[k] = int(v)
+            elif isinstance(v, (np.floating, np.float64)):
+                record_to_insert[k] = float(v)
+            elif pd.isna(v):
+                record_to_insert[k] = None
+                
+        # 6. Commit the new engineered record into MongoDB Atlas Feature Store
+        logger.info("Upserting new engineered record into MongoDB Atlas...")
+        upsert_count = insert_records([record_to_insert])
+        logger.info(f"Feature Store update finished. Upserted count: {upsert_count}")
+        
+        # Safe formatting helper
+        def fmt_val(v, fmt):
+            return f"{v:{fmt}}" if v is not None else "N/A"
+
         print("\n" + "="*70)
         print("         PEARLS AQI PREDICTOR - FEATURE ENGINE PIPELINE RUN")
         print("="*70)
-        print(f"  Processed History size: {df_features.shape[0]} records")
-        print(f"  Target Datetime:        {latest_row['timestamp']}")
-        print(f"  Calculated AQI:         {latest_row['aqi']:.1f}")
-        print(f"  Cyclical Cos Hour:      {latest_row['cos_hour']:.3f}")
-        print(f"  Rolling 24h Mean AQI:   {latest_row['rolling_mean_24h_aqi']:.1f}")
-        print(f"  1-Hour Lag PM2.5:       {latest_row['lag_1h_pm2_5']:.1f}")
-        print(f"  1-Hour AQI Change Rate: {latest_row['aqi_change_rate_1h']:.3f}")
+        print(f"  Ingestion Source:       Open-Meteo APIs / AQICN Fallback")
+        print(f"  Processed History size: {df_engineered.shape[0]} records")
+        print(f"  Target Datetime:        {record_to_insert['timestamp']}")
+        print(f"  Calculated AQI:         {fmt_val(record_to_insert.get('aqi'), '.1f')}")
+        print(f"  Rolling 24h Mean AQI:   {fmt_val(record_to_insert.get('rolling_mean_24h_aqi'), '.1f')}")
+        print(f"  1-Hour Lag PM2.5:       {fmt_val(record_to_insert.get('lag_1h_pm2_5'), '.1f')}")
+        print(f"  1-Hour AQI Change Rate: {fmt_val(record_to_insert.get('aqi_change_rate_1h'), '.3f')}")
         print("="*70)
-        print("  >>> FEATURE ENGINE PIPELINE: 100% OPERATIONAL <<<\n")
+        print("  >>> FEATURE ENGINE PIPELINE: 100% OPERATIONAL & COMMITTED <<<\n")
         
         return True
+        
     except Exception as e:
         logger.critical(f"Feature pipeline crashed during execution: {e}")
         raise e

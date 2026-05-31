@@ -183,7 +183,7 @@ def get_latest_features(limit: int = 49) -> pd.DataFrame:
     
     try:
         # Fetch using our high-performance descending index
-        cursor = collection.find(query={}, projection={"_id": 0}).sort("timestamp", DESCENDING).limit(limit)
+        cursor = collection.find({}, {"_id": 0}).sort("timestamp", DESCENDING).limit(limit)
         records = list(cursor)
         
         df = pd.DataFrame(records)
